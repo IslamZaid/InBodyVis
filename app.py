@@ -462,8 +462,12 @@ def main():
     # Initialize authenticator
     authenticator = get_authenticator()
     
-    # Check authentication
-    name, authentication_status, username = authenticator.login('Login', 'main')
+    # streamlit-authenticator 0.4.x API - renders login widget
+    authenticator.login(location='main')
+    
+    # Get authentication status from session state
+    authentication_status = st.session_state.get('authentication_status')
+    name = st.session_state.get('name')
     
     if authentication_status == False:
         st.error('❌ Username or password is incorrect')
@@ -493,7 +497,7 @@ def main():
         st.title("📊 Body Composition Dashboard")
     with col_user:
         st.markdown(f"👤 **{name}**")
-        authenticator.logout('Logout', 'main')
+        authenticator.logout(location='main')
     
     st.markdown("""
     Upload your body composition PDF reports to visualize health trends over time.
