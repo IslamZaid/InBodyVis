@@ -6,6 +6,7 @@ and visualizing health trends over time.
 
 import re
 import io
+import yaml
 from datetime import datetime
 
 import fitz  # PyMuPDF
@@ -15,13 +16,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.linear_model import LinearRegression
 import streamlit as st
-
-# Google OAuth (optional - graceful fallback if not configured)
-try:
-    from streamlit_google_auth import Authenticate
-    GOOGLE_AUTH_AVAILABLE = True
-except ImportError:
-    GOOGLE_AUTH_AVAILABLE = False
+import streamlit_authenticator as stauth
 
 # =============================================================================
 # Configuration
@@ -35,53 +30,72 @@ st.set_page_config(
 )
 
 # =============================================================================
-# Authentication
+# Authentication Configuration
 # =============================================================================
 
-def check_authentication():
-    """
-    Check if user is authenticated via Google OAuth.
-    Returns (is_authenticated, user_info) tuple.
-    Falls back to allowing access if auth is not configured.
-    """
-    # Check if secrets are configured
-    if not GOOGLE_AUTH_AVAILABLE:
-        return True, {"name": "Guest", "email": "guest@local"}
-    
+# Default credentials - in production, use st.secrets or external storage
+DEFAULT_CREDENTIALS = {
+    'usernames': {
+        'demo': {
+            'email': 'demo@inbodyvis.com',
+            'name': 'Demo User',
+            'password': stauth.Hasher(['demo123']).generate()[0]
+        },
+        'admin': {
+            'email': 'admin@inbodyvis.com', 
+            'name': 'Administrator',
+            'password': stauth.Hasher(['admin123']).generate()[0]
+        }
+    }
+}
+
+def get_authenticator():
+    """Initialize and return the authenticator object."""
+    # Try to load from secrets first, fallback to defaults
     try:
-        # Check for required secrets
-        if "google_auth" not in st.secrets:
-            return True, {"name": "Guest", "email": "guest@local"}
-        
-        # Initialize authenticator
-        authenticator = Authenticate(
-            secret_credentials_path=None,  # Use secrets.toml instead
-            cookie_name='inbodyvis_auth',
-            cookie_key=st.secrets.get("cookie_key", "inbodyvis_secret_key"),
-            redirect_uri=st.secrets["google_auth"].get(
-                "redirect_uri", 
-                "http://localhost:8501/oauth2callback"
-            ),
-            cookie_expiry_days=30,
-        )
-        
-        # Check authentication
-        authenticator.check_authentification()
-        
-        if st.session_state.get("connected", False):
-            return True, {
-                "name": st.session_state.get("user_info", {}).get("name", "User"),
-                "email": st.session_state.get("user_info", {}).get("email", "")
-            }
+        if "credentials" in st.secrets:
+            credentials = dict(st.secrets["credentials"])
         else:
-            # Show login button
-            authenticator.login()
-            return False, None
+            credentials = DEFAULT_CREDENTIALS
+    except:
+        credentials = DEFAULT_CREDENTIALS
+    
+    authenticator = stauth.Authenticate(
+        credentials,
+        'inbodyvis_cookie',           # Cookie name
+        'inbodyvis_signature_key',    # Signature key
+        cookie_expiry_days=30
+    )
+    
+    return authenticator
+
+def show_login_page(authenticator):
+    """Display the login page."""
+    st.title("📊 Body Composition Dashboard")
+    st.markdown("### Welcome! Please sign in to continue.")
+    
+    # Login form
+    name, authentication_status, username = authenticator.login('Login', 'main')
+    
+    if authentication_status == False:
+        st.error('❌ Username or password is incorrect')
+    elif authentication_status == None:
+        st.info('👆 Enter your username and password above')
+        
+        # Show demo credentials
+        with st.expander("🔑 Demo Credentials"):
+            st.markdown("""
+            **Demo Account:**
+            - Username: `demo`
+            - Password: `demo123`
             
-    except Exception as e:
-        # If auth fails for any reason, allow access as guest
-        st.warning(f"Authentication not configured. Running in guest mode.")
-        return True, {"name": "Guest", "email": "guest@local"}
+            **Admin Account:**
+            - Username: `admin`  
+            - Password: `admin123`
+            """)
+    
+    return authentication_status, name
+
 
 # =============================================================================
 # Regex Patterns (All 28 Parameters)
@@ -442,28 +456,41 @@ def create_dashboard(df: pd.DataFrame, metrics: list[str]) -> go.Figure:
 def main():
     """Main Streamlit application."""
     
-    # Check authentication first
-    is_authenticated, user_info = check_authentication()
+    # Initialize authenticator
+    authenticator = get_authenticator()
     
-    if not is_authenticated:
-        # Show login page
+    # Check authentication
+    name, authentication_status, username = authenticator.login('Login', 'main')
+    
+    if authentication_status == False:
+        st.error('❌ Username or password is incorrect')
+        st.stop()
+    elif authentication_status == None:
         st.title("📊 Body Composition Dashboard")
-        st.markdown("### Welcome! Please sign in with Google to continue.")
-        st.info("👆 Click the button above to sign in with your Google account.")
-        return
+        st.markdown("### Welcome! Please sign in to continue.")
+        st.info('👆 Enter your username and password above')
+        
+        # Show demo credentials
+        with st.expander("🔑 Demo Credentials"):
+            st.markdown("""
+            **Demo Account:**
+            - Username: `demo`
+            - Password: `demo123`
+            
+            **Admin Account:**
+            - Username: `admin`  
+            - Password: `admin123`
+            """)
+        st.stop()
     
     # User is authenticated - show main app
-    # Header with user greeting
+    # Header with user greeting and logout
     col_title, col_user = st.columns([4, 1])
     with col_title:
         st.title("📊 Body Composition Dashboard")
     with col_user:
-        if user_info and user_info.get("name") != "Guest":
-            st.markdown(f"👤 **{user_info.get('name', 'User')}**")
-            if st.button("Logout", type="secondary", use_container_width=True):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
+        st.markdown(f"👤 **{name}**")
+        authenticator.logout('Logout', 'main')
     
     st.markdown("""
     Upload your body composition PDF reports to visualize health trends over time.
