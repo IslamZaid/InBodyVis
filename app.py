@@ -242,19 +242,23 @@ def create_dashboard(df: pd.DataFrame, metrics: list[str]) -> go.Figure:
     if not metrics:
         return go.Figure()
     
-    # Calculate grid dimensions (3 columns)
+    # Calculate grid dimensions (3 columns for desktop, adapts for mobile)
     n_cols = 3
     n_rows = (len(metrics) + n_cols - 1) // n_cols
     
     # Create subplot titles
     subplot_titles = [m.replace("_", " ") for m in metrics]
     
+    # Fixed aspect ratio: 4:3 per chart
+    # Base height per row for consistent proportions
+    chart_height_per_row = 280
+    
     fig = make_subplots(
         rows=n_rows,
         cols=n_cols,
         subplot_titles=subplot_titles,
-        vertical_spacing=0.08,
-        horizontal_spacing=0.05
+        vertical_spacing=0.12,  # More spacing for readability
+        horizontal_spacing=0.08
     )
     
     for idx, metric in enumerate(metrics):
@@ -277,15 +281,19 @@ def create_dashboard(df: pd.DataFrame, metrics: list[str]) -> go.Figure:
         else:
             trend_label = "Stable"
         
-        # Create trace
+        # Create trace with responsive marker sizes
         fig.add_trace(
             go.Scatter(
                 x=dates,
                 y=values,
                 mode="lines+markers",
                 name=metric,
-                line=dict(color=color, width=2),
-                marker=dict(color=color, size=8),
+                line=dict(color=color, width=2.5),
+                marker=dict(
+                    color=color, 
+                    size=10,
+                    line=dict(width=1, color='white')
+                ),
                 hovertemplate=(
                     f"<b>{metric.replace('_', ' ')}</b><br>"
                     "Value: %{y:.2f}<br>"
@@ -299,20 +307,74 @@ def create_dashboard(df: pd.DataFrame, metrics: list[str]) -> go.Figure:
             col=col
         )
     
-    # Update layout
+    # Responsive layout configuration
     fig.update_layout(
-        height=300 * n_rows,
+        # Fixed aspect ratio: height based on number of rows
+        height=chart_height_per_row * n_rows,
+        # Title configuration
         title=dict(
             text="📊 Body Composition Trends Dashboard",
-            font=dict(size=24),
-            x=0.5
+            font=dict(size=22, weight="bold"),
+            x=0.5,
+            xanchor='center'
         ),
+        # Clean template with grid
         template="plotly_white",
-        margin=dict(t=80, b=40, l=40, r=40)
+        # Responsive margins (percentage-based thinking)
+        margin=dict(
+            t=80,   # Top margin for title
+            b=60,   # Bottom margin for x-axis labels
+            l=50,   # Left margin for y-axis
+            r=30,   # Right margin
+            pad=4   # Padding between plot and axes
+        ),
+        # Enable auto-sizing for responsive behavior
+        autosize=True,
+        # Uniform font sizing
+        font=dict(size=12),
+        # Hover mode for better mobile experience
+        hovermode='closest',
+        # Responsive legend (if needed)
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.15,
+            xanchor="center",
+            x=0.5
+        )
     )
     
-    # Rotate x-axis labels
-    fig.update_xaxes(tickangle=45)
+    # Update all x-axes for consistent, responsive formatting
+    fig.update_xaxes(
+        tickangle=45,
+        tickfont=dict(size=10),
+        showgrid=True,
+        gridwidth=1,
+        gridcolor='rgba(128,128,128,0.2)',
+        showline=True,
+        linewidth=1,
+        linecolor='rgba(128,128,128,0.4)',
+        # Constrain to domain for fixed aspect ratio
+        constrain='domain'
+    )
+    
+    # Update all y-axes for consistent, responsive formatting
+    fig.update_yaxes(
+        tickfont=dict(size=10),
+        showgrid=True,
+        gridwidth=1,
+        gridcolor='rgba(128,128,128,0.2)',
+        showline=True,
+        linewidth=1,
+        linecolor='rgba(128,128,128,0.4)',
+        # Scale anchor for fixed aspect ratio
+        scaleanchor=None,  # Allow independent scaling per chart
+        automargin=True    # Auto-adjust margins for labels
+    )
+    
+    # Make subplot titles more prominent
+    for annotation in fig['layout']['annotations']:
+        annotation['font'] = dict(size=13, weight='bold')
     
     return fig
 
