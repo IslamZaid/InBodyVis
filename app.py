@@ -33,32 +33,35 @@ st.set_page_config(
 # Authentication Configuration
 # =============================================================================
 
-# Default credentials - in production, use st.secrets or external storage
-DEFAULT_CREDENTIALS = {
-    'usernames': {
-        'demo': {
-            'email': 'demo@inbodyvis.com',
-            'name': 'Demo User',
-            'password': stauth.Hasher(['demo123']).generate()[0]
-        },
-        'admin': {
-            'email': 'admin@inbodyvis.com', 
-            'name': 'Administrator',
-            'password': stauth.Hasher(['admin123']).generate()[0]
-        }
-    }
-}
+# Pre-hashed passwords (generated with bcrypt)
+# demo123 and admin123 hashed with bcrypt
+DEMO_PASSWORD_HASH = "$2b$12$kpZsxIljZph8RmyfvKUi..bWuq8uJ2XBpQTNyyvDdnS/6bExSfKrS"
+ADMIN_PASSWORD_HASH = "$2b$12$lZJFDRHvyjgMYxfwLMcCre1z.qID7Avdp6iZGKq3Ps5rR50PGOF6m"
 
 def get_authenticator():
     """Initialize and return the authenticator object."""
-    # Try to load from secrets first, fallback to defaults
+    # Default credentials with pre-hashed passwords
+    credentials = {
+        'usernames': {
+            'demo': {
+                'email': 'demo@inbodyvis.com',
+                'name': 'Demo User',
+                'password': DEMO_PASSWORD_HASH
+            },
+            'admin': {
+                'email': 'admin@inbodyvis.com', 
+                'name': 'Administrator',
+                'password': ADMIN_PASSWORD_HASH
+            }
+        }
+    }
+    
+    # Try to load from secrets if available
     try:
         if "credentials" in st.secrets:
             credentials = dict(st.secrets["credentials"])
-        else:
-            credentials = DEFAULT_CREDENTIALS
     except:
-        credentials = DEFAULT_CREDENTIALS
+        pass
     
     authenticator = stauth.Authenticate(
         credentials,
