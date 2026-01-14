@@ -6,7 +6,6 @@ and visualizing health trends over time.
 
 import re
 import io
-import yaml
 from datetime import datetime
 
 import fitz  # PyMuPDF
@@ -16,7 +15,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from sklearn.linear_model import LinearRegression
 import streamlit as st
-import streamlit_authenticator as stauth
+
+# Import our database module
+import database as db
 
 # =============================================================================
 # Configuration
@@ -30,74 +31,99 @@ st.set_page_config(
 )
 
 # =============================================================================
-# Authentication Configuration
+# Authentication Functions
 # =============================================================================
 
-# Pre-hashed passwords (generated with bcrypt)
-# demo123 and admin123 hashed with bcrypt
-DEMO_PASSWORD_HASH = "$2b$12$kpZsxIljZph8RmyfvKUi..bWuq8uJ2XBpQTNyyvDdnS/6bExSfKrS"
-ADMIN_PASSWORD_HASH = "$2b$12$lZJFDRHvyjgMYxfwLMcCre1z.qID7Avdp6iZGKq3Ps5rR50PGOF6m"
-
-def get_authenticator():
-    """Initialize and return the authenticator object."""
-    # Default credentials with pre-hashed passwords
-    credentials = {
-        'usernames': {
-            'demo': {
-                'email': 'demo@inbodyvis.com',
-                'name': 'Demo User',
-                'password': DEMO_PASSWORD_HASH
-            },
-            'admin': {
-                'email': 'admin@inbodyvis.com', 
-                'name': 'Administrator',
-                'password': ADMIN_PASSWORD_HASH
-            }
-        }
-    }
+def show_login_form():
+    """Display login form and handle authentication."""
+    st.markdown("### 🔑 Login")
     
-    # Try to load from secrets if available
-    try:
-        if "credentials" in st.secrets:
-            credentials = dict(st.secrets["credentials"])
-    except:
-        pass
-    
-    authenticator = stauth.Authenticate(
-        credentials,
-        'inbodyvis_cookie',           # Cookie name
-        'inbodyvis_signature_key',    # Signature key
-        cookie_expiry_days=30
-    )
-    
-    return authenticator
-
-def show_login_page(authenticator):
-    """Display the login page."""
-    st.title("📊 Body Composition Dashboard")
-    st.markdown("### Welcome! Please sign in to continue.")
-    
-    # Login form
-    name, authentication_status, username = authenticator.login('Login', 'main')
-    
-    if authentication_status == False:
-        st.error('❌ Username or password is incorrect')
-    elif authentication_status == None:
-        st.info('👆 Enter your username and password above')
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login", use_container_width=True)
         
-        # Show demo credentials
-        with st.expander("🔑 Demo Credentials"):
-            st.markdown("""
-            **Demo Account:**
-            - Username: `demo`
-            - Password: `demo123`
-            
-            **Admin Account:**
-            - Username: `admin`  
-            - Password: `admin123`
-            """)
+        if submit:
+            if username and password:
+                success, user_info = db.authenticate_user(username, password)
+                if success:
+                    st.session_state['authenticated'] = True
+                    st.session_state['user'] = user_info
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid username or password")
+            else:
+                st.warning("Please enter both username and password")
+
+
+def show_register_form():
+    """Display registration form and handle new user creation."""
+    st.markdown("### 📝 Create Account")
     
-    return authentication_status, name
+    with st.form("register_form"):
+        name = st.text_input("Full Name")
+        email = st.text_input("Email")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        password_confirm = st.text_input("Confirm Password", type="password")
+        submit = st.form_submit_button("Create Account", use_container_width=True)
+        
+        if submit:
+            # Validation
+            if not all([name, email, username, password, password_confirm]):
+                st.error("Please fill in all fields")
+            elif password != password_confirm:
+                st.error("Passwords do not match")
+            elif len(password) < 6:
+                st.error("Password must be at least 6 characters")
+            elif '@' not in email:
+                st.error("Please enter a valid email address")
+            else:
+                success, message = db.create_user(username, email, password, name)
+                if success:
+                    st.success(f"✅ {message} Please login.")
+                else:
+                    st.error(f"❌ {message}")
+
+
+def show_auth_page():
+    """Display the authentication page with login/register tabs."""
+    st.title("📊 Body Composition Dashboard")
+    st.markdown("Track your health metrics and visualize your progress over time.")
+    
+    st.divider()
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        tab1, tab2 = st.tabs(["� Login", "📝 Sign Up"])
+        
+        with tab1:
+            show_login_form()
+            st.markdown("---")
+            st.info("**Demo Account:** Username: `demo` | Password: `demo123`")
+        
+        with tab2:
+            show_register_form()
+    
+    return False
+
+
+def is_authenticated():
+    """Check if user is authenticated."""
+    return st.session_state.get('authenticated', False)
+
+
+def get_current_user():
+    """Get the current logged-in user info."""
+    return st.session_state.get('user', None)
+
+
+def logout():
+    """Clear session and logout user."""
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
 
 
 # =============================================================================
@@ -456,154 +482,120 @@ def create_dashboard(df: pd.DataFrame, metrics: list[str]) -> go.Figure:
 # Main Application
 # =============================================================================
 
-def main():
-    """Main Streamlit application."""
+def process_and_save_reports(uploaded_files, user_id):
+    """Process uploaded PDF files and save to database."""
+    new_reports_count = 0
     
-    # Initialize authenticator
-    authenticator = get_authenticator()
-    
-    # streamlit-authenticator 0.4.x API - renders login widget
-    authenticator.login(location='main')
-    
-    # Get authentication status from session state
-    authentication_status = st.session_state.get('authentication_status')
-    name = st.session_state.get('name')
-    
-    if authentication_status == False:
-        st.error('❌ Username or password is incorrect')
-        st.stop()
-    elif authentication_status == None:
-        st.title("📊 Body Composition Dashboard")
-        st.markdown("### Welcome! Please sign in to continue.")
-        st.info('👆 Enter your username and password above')
-        
-        # Show demo credentials
-        with st.expander("🔑 Demo Credentials"):
-            st.markdown("""
-            **Demo Account:**
-            - Username: `demo`
-            - Password: `demo123`
+    for uploaded_file in uploaded_files:
+        try:
+            pdf_bytes = uploaded_file.read()
+            extracted = extract_data(pdf_bytes)
             
-            **Admin Account:**
-            - Username: `admin`  
-            - Password: `admin123`
-            """)
-        st.stop()
+            # Parse DateTime for the report
+            report_date = parse_datetime(extracted.get("Date"), extracted.get("Time"))
+            
+            # Save to database
+            if db.save_report(user_id, uploaded_file.name, extracted, report_date):
+                new_reports_count += 1
+                
+        except Exception as e:
+            st.error(f"Error processing {uploaded_file.name}: {str(e)}")
     
-    # User is authenticated - show main app
-    # Header with user greeting and logout
+    return new_reports_count
+
+
+def show_dashboard(user):
+    """Display the main dashboard for authenticated users."""
+    
+    # Header with user info and logout
     col_title, col_user = st.columns([4, 1])
     with col_title:
         st.title("📊 Body Composition Dashboard")
     with col_user:
-        st.markdown(f"👤 **{name}**")
-        authenticator.logout(location='main')
+        st.markdown(f"👤 **{user['name']}**")
+        if st.button("Logout", use_container_width=True):
+            logout()
     
     st.markdown("""
-    Upload your body composition PDF reports to visualize health trends over time.
-    The dashboard analyzes **28 health parameters** and shows whether each metric
-    is **improving** (green) or **declining** (red).
+    Upload your body composition PDF reports to track health trends over time.
+    Your data is **saved automatically** and available whenever you log in.
     """)
     
     st.divider()
+    
+    # Get user's saved report count
+    report_count = db.get_report_count(user['id'])
     
     # Sidebar
     with st.sidebar:
         st.header("📁 Upload Reports")
         uploaded_files = st.file_uploader(
-            "Select PDF reports",
+            "Add new PDF reports",
             type=["pdf"],
             accept_multiple_files=True,
-            help="Upload one or more body composition PDF reports"
+            help="Upload body composition PDF reports to add to your history"
         )
+        
+        # Process uploaded files
+        if uploaded_files:
+            if st.button("💾 Save Reports", use_container_width=True):
+                with st.spinner("Saving reports..."):
+                    count = process_and_save_reports(uploaded_files, user['id'])
+                    if count > 0:
+                        st.success(f"✅ Saved {count} report(s)")
+                        st.rerun()
+        
+        st.divider()
+        
+        # Report statistics
+        st.header("📊 Your Data")
+        st.metric("Saved Reports", report_count)
         
         st.divider()
         
         st.header("ℹ️ Legend")
         st.markdown("""
-        - 🟢 **Green**: Healthy trend (improving)
-        - 🔴 **Red**: Unhealthy trend (declining)
-        - ⚪ **Gray**: Stable / No significant trend
-        """)
-        
-        st.divider()
-        
-        st.header("📋 Tracked Metrics")
-        st.markdown("""
-        **Composition:**
-        - Weight, BMI, Body Fat %, Visceral Fat
-        
-        **Muscle & Bone:**
-        - Muscle Mass, Skeletal Muscle, Bone Mass
-        
-        **Hydration:**
-        - Body Water, ECW, ICW, Phase Angle
-        
-        **Metabolism:**
-        - BMR, Metabolic Age, Impedance
+        - 🟢 **Green**: Healthy trend
+        - 🔴 **Red**: Unhealthy trend  
+        - ⚪ **Gray**: Stable
         """)
     
-    # Main content
-    if not uploaded_files:
-        st.info("👈 Upload PDF reports using the sidebar to get started.")
+    # Main content - load user's historical data
+    if report_count == 0:
+        st.info("👈 Upload PDF reports using the sidebar to get started. Your data will be saved for future sessions!")
         
-        # Show sample layout
         with st.expander("📖 How to use this dashboard"):
             st.markdown("""
             ### Getting Started
             
-            1. **Upload Reports**: Use the file uploader in the sidebar to select one or more
-               body composition PDF reports.
+            1. **Upload Reports**: Use the sidebar to upload your body composition PDF reports
+            2. **Save Data**: Click "Save Reports" to store them in your account
+            3. **Track Progress**: View your health trends over time
+            4. **Add More**: Upload additional reports anytime to extend your history
             
-            2. **View Data**: Once uploaded, you'll see all extracted data in a table below.
-            
-            3. **Analyze Trends**: The dashboard will automatically create trend charts for
-               all detected metrics, color-coded by health direction:
-               - **Green lines**: The trend indicates improvement
-               - **Red lines**: The trend indicates decline
-            
-            4. **Hover for Details**: Hover over any data point to see the exact value,
-               date, and trend status.
-            
-            ### Supported Metrics
-            
-            This dashboard extracts and analyzes **28 different health parameters** including:
-            - Body composition (weight, BMI, body fat percentage)
-            - Muscle metrics (muscle mass, skeletal muscle mass, sarcopenic index)
-            - Hydration (body water, ECW, ICW, phase angle)
-            - Metabolism (BMR, metabolic age)
-            - And more...
+            ### Your Data is Secure
+            - Data is saved to your personal account
+            - Only you can see your reports
+            - Add more reports anytime to track your progress
             """)
         return
     
-    # Process uploaded files
-    with st.spinner("📑 Processing PDF reports..."):
-        all_data = []
+    # Load user's historical data
+    with st.spinner("Loading your health data..."):
+        df = db.get_user_reports_dataframe(user['id'])
         
-        for uploaded_file in uploaded_files:
-            try:
-                pdf_bytes = uploaded_file.read()
-                extracted = extract_data(pdf_bytes)
-                extracted["Source File"] = uploaded_file.name
-                all_data.append(extracted)
-            except Exception as e:
-                st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-        
-        if not all_data:
-            st.error("No data could be extracted from the uploaded files.")
+        if df.empty:
+            st.warning("No data found. Please upload some reports.")
             return
         
-        # Create DataFrame
-        df = pd.DataFrame(all_data)
-        
-        # Merge Date and Time into DateTime
+        # Process DateTime
         df["DateTime"] = df.apply(
             lambda row: parse_datetime(row.get("Date"), row.get("Time")),
             axis=1
         )
         
-        # Identify numeric columns (exclude metadata)
-        metadata_cols = ["Name", "Gender", "Date", "Time", "DateTime", "Source File"]
+        # Identify numeric columns
+        metadata_cols = ["Name", "Gender", "Date", "Time", "DateTime", "Source File", "Uploaded At"]
         numeric_cols = [col for col in df.columns if col not in metadata_cols]
         
         # Convert numeric columns
@@ -614,9 +606,8 @@ def main():
         if df["DateTime"].notna().any():
             df = df.sort_values("DateTime").reset_index(drop=True)
     
-    st.success(f"✅ Successfully processed {len(all_data)} report(s)")
-    
     # Summary metrics
+    st.subheader("📊 Overview")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -624,95 +615,130 @@ def main():
             st.metric("👤 Subject", df["Name"].dropna().iloc[0])
     
     with col2:
-        if "DateTime" in df.columns and df["DateTime"].notna().any():
-            date_range = f"{df['DateTime'].min():%Y-%m-%d} to {df['DateTime'].max():%Y-%m-%d}"
-            st.metric("📅 Date Range", date_range)
+        if df["DateTime"].notna().any():
+            earliest = df['DateTime'].min()
+            latest = df['DateTime'].max()
+            if earliest and latest:
+                st.metric("📅 Date Range", f"{earliest:%Y-%m-%d} to {latest:%Y-%m-%d}")
     
     with col3:
-        st.metric("📊 Reports", len(all_data))
+        st.metric("📊 Total Reports", len(df))
     
     with col4:
         valid_metrics = sum(1 for col in numeric_cols if df[col].notna().any())
-        st.metric("📈 Metrics Found", valid_metrics)
+        st.metric("📈 Metrics Tracked", valid_metrics)
     
     st.divider()
     
-    # Data table
-    with st.expander("📋 View Raw Data", expanded=False):
-        # Reorder columns for better display
-        display_cols = ["DateTime", "Source File"] + [col for col in df.columns 
-                                                       if col not in ["DateTime", "Source File"]]
-        display_cols = [col for col in display_cols if col in df.columns]
-        st.dataframe(df[display_cols], use_container_width=True)
+    # Tabs for different views
+    tab1, tab2, tab3 = st.tabs(["📈 Trend Analysis", "📋 Data Table", "🗑️ Manage Reports"])
     
-    st.divider()
-    
-    # Dashboard
-    st.header("📈 Trend Analysis")
-    
-    # Get metrics that have at least some valid data
-    valid_metrics = [col for col in numeric_cols if df[col].notna().any()]
-    
-    if len(df) < 2:
-        st.warning("⚠️ Upload at least 2 reports to see trend analysis.")
+    with tab1:
+        # Dashboard charts
+        valid_metrics = [col for col in numeric_cols if df[col].notna().any()]
         
-        # Still show available data as single points
-        if valid_metrics:
-            fig = create_dashboard(df, valid_metrics)
-            st.plotly_chart(fig, use_container_width=True)
-    else:
+        if len(df) < 2:
+            st.warning("⚠️ Upload at least 2 reports to see trend analysis.")
+        
         if valid_metrics:
             fig = create_dashboard(df, valid_metrics)
             st.plotly_chart(fig, use_container_width=True)
             
             # Trend summary
-            st.divider()
-            st.header("📊 Trend Summary")
-            
-            improving = []
-            declining = []
-            stable = []
-            
-            for metric in valid_metrics:
-                if metric in HEALTHY_DIRECTION:
-                    values = df[metric].tolist()
-                    slope = calculate_trend(values)
-                    
-                    if slope is None or abs(slope) < 0.001:
-                        stable.append(metric)
-                    elif is_healthy_trend(metric, slope):
-                        improving.append(metric)
+            if len(df) >= 2:
+                st.divider()
+                st.subheader("📊 Trend Summary")
+                
+                improving = []
+                declining = []
+                stable = []
+                
+                for metric in valid_metrics:
+                    if metric in HEALTHY_DIRECTION:
+                        values = df[metric].tolist()
+                        slope = calculate_trend(values)
+                        
+                        if slope is None or abs(slope) < 0.001:
+                            stable.append(metric)
+                        elif is_healthy_trend(metric, slope):
+                            improving.append(metric)
+                        else:
+                            declining.append(metric)
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("### 🟢 Improving")
+                    if improving:
+                        for m in improving:
+                            st.markdown(f"- {m.replace('_', ' ')}")
                     else:
-                        declining.append(metric)
-            
-            col1, col2, col3 = st.columns(3)
-            
+                        st.markdown("*None*")
+                
+                with col2:
+                    st.markdown("### 🔴 Declining")
+                    if declining:
+                        for m in declining:
+                            st.markdown(f"- {m.replace('_', ' ')}")
+                    else:
+                        st.markdown("*None*")
+                
+                with col3:
+                    st.markdown("### ⚪ Stable")
+                    if stable:
+                        for m in stable:
+                            st.markdown(f"- {m.replace('_', ' ')}")
+                    else:
+                        st.markdown("*None*")
+    
+    with tab2:
+        # Data table view
+        st.subheader("📋 All Your Reports")
+        display_cols = ["DateTime", "Source File"] + [col for col in df.columns 
+                                                       if col not in ["DateTime", "Source File", "Uploaded At"]]
+        display_cols = [col for col in display_cols if col in df.columns]
+        st.dataframe(df[display_cols], use_container_width=True)
+    
+    with tab3:
+        # Manage reports - allow deletion
+        st.subheader("🗑️ Manage Your Reports")
+        st.warning("⚠️ Deleting reports cannot be undone!")
+        
+        reports = db.get_user_reports(user['id'])
+        for report in reports:
+            col1, col2, col3 = st.columns([3, 2, 1])
             with col1:
-                st.markdown("### 🟢 Improving")
-                if improving:
-                    for m in improving:
-                        st.markdown(f"- {m.replace('_', ' ')}")
-                else:
-                    st.markdown("*None*")
-            
+                st.text(report['filename'])
             with col2:
-                st.markdown("### 🔴 Declining")
-                if declining:
-                    for m in declining:
-                        st.markdown(f"- {m.replace('_', ' ')}")
-                else:
-                    st.markdown("*None*")
-            
+                st.text(str(report['report_date'] or 'Unknown date'))
             with col3:
-                st.markdown("### ⚪ Stable")
-                if stable:
-                    for m in stable:
-                        st.markdown(f"- {m.replace('_', ' ')}")
-                else:
-                    st.markdown("*None*")
-        else:
-            st.warning("⚠️ No numeric data found in the uploaded reports.")
+                if st.button("🗑️", key=f"del_{report['id']}"):
+                    if db.delete_report(report['id'], user['id']):
+                        st.success("Deleted!")
+                        st.rerun()
+
+
+def main():
+    """Main application entry point."""
+    
+    # Check if user is authenticated
+    if not is_authenticated():
+        show_auth_page()
+        return
+    
+    # Get current user
+    user = get_current_user()
+    if not user:
+        logout()
+        return
+    
+    # Show main dashboard
+    show_dashboard(user)
 
 
 if __name__ == "__main__":
+    # Initialize database and create demo user on first run
+    if not db.get_user_by_username('demo'):
+        db.create_user('demo', 'demo@inbodyvis.com', 'demo123', 'Demo User')
+    
     main()
